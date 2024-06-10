@@ -13,8 +13,9 @@ use crate::{log_debug, log_error};
 
 fn try_match_seek_line(line: &String) -> Option<FoundSeek> {
     if let Some(captures) = &SEEK_REGEX.captures(&line) {
-        let timestamp = captures.get(1).unwrap().as_str();
-        let seek_offset = captures.get(4).unwrap().as_str();
+        log_debug!("Found seek line: {:#?}", line);
+        let timestamp = captures.name("timestamp").unwrap().as_str();
+        let seek_offset = captures.name("new_offset").unwrap().as_str();
 
         let timestamp = parse_timestamp(timestamp);
         // also, parse the seek offset as a floating point
@@ -45,8 +46,9 @@ fn parse_timestamp(timestamp: &str) -> DateTime<Local> {
 
 fn try_match_url_line(line: &String, line_number: u64) -> Option<FoundUrl> {
     if let Some(captures) = &URL_REGEX.captures(&line) {
-        let timestamp = captures.get(1).unwrap().as_str();
-        let url = captures.get(2).unwrap().as_str();
+        log_debug!("Found URL line: {:#?}", line);
+        let timestamp = captures.name("timestamp").unwrap().as_str();
+        let url = captures.name("url").unwrap().as_str();
         let timestamp = parse_timestamp(timestamp);
         return Some(FoundUrl {
             timestamp,
@@ -93,33 +95,48 @@ fn get_vrc_log_file_dir() -> String {
 /*
 We have several examples of log lines to choose from.
 
-"2024.04.14 23:28:20 Log        -  [AT INFO        TVManager (Theatre 1)] [AVPro1080p_Theatre1] loading URL:
-https://example.net/Media/Movies/spykids3d.mp4"
-Initially, I had this one, but obviously this doesn't work if I'm not in the theatre.
+In the theatre:
+2024.06.06 17:22:13 Log        -  [AT INFO    	TVManager (Theatre 1 TVManager)] [VideoManager_Theatre1] loading URL: https://example.net/video.mp4
+2024.06.06 17:22:13 Log        -  [Video Playback] Attempting to resolve URL 'https://example.net/video.mp4'
+...skipping...
+2024.06.06 17:22:14 Log        -  [Video Playback] URL 'https://example.net/video.mp4' resolved to 'https://example.net/video.mp4'
+2024.06.06 17:22:14 Log        -  [AVProVideo] Opening https://example.net/video.mp4 (offset 0) with API MediaFoundation
+2024.06.06 17:22:14 Log        -  [AVProVideo] Using playback path: MF-MediaEngine-Hardware (1920x1080@0.00)
+2024.06.06 17:22:14 Log        -  [AT INFO    	TVManager (Theatre 1 TVManager)] Allowing video to buffer for 1 seconds.
+2024.06.06 17:22:14 Log        -  [AT DEBUG 	TVManager (Theatre 1 TVManager)] Params set after video is ready
+2024.06.06 17:22:14 Log        -  [AT DEBUG 	VideoManagerV2 (Theatre 1 TVManager/VideoManager_Theatre1)] Activated
+2024.06.06 17:22:14 Log        -  [AT INFO    	TVManager (Theatre 1 TVManager)] [VideoManager_Theatre1] (Some Username) Now Playing: https://example.net/video.mp4
 
-"2024.04.14 21:25:36 Log        -  [AVProVideo] Opening http://example.com/mystream/stream.m3u8 (offset 0)
-with API MediaFoundation"
-AVProVideo might be a good option, but it likely doesn't capture usage of the Unity player, which iirc also needs
-fixing.
+In a non-ProTV world:
+2024.05.20 20:33:53 Log        -  [USharpVideo] Started video load for URL: https://www.youtube.com/watch?v=jfKfPfyJRdk, requested by SomeOtherUser
+2024.05.20 20:33:53 Log        -  [Video Playback] Attempting to resolve URL 'https://www.youtube.com/watch?v=jfKfPfyJRdk'
+2024.05.20 20:33:53 Log        -  NativeProcess.Start: started process id [20748]: C:/users/steamuser/AppData/LocalLow/VRChat/VRChat\Tools/yt-dlp.exe (...)
+2024.05.20 20:33:53 Log        -  [USharpVideo] Playing synced https://www.youtube.com/watch?v=jfKfPfyJRdk
+...skipping...
+2024.05.20 20:33:55 Log        -  [Video Playback] URL 'https://www.youtube.com/watch?v=jfKfPfyJRdk' resolved to 'https://manifest.googlevideo.com/api/manifest/hls_playlist/asdfgh/playlist/index.m3u8'
+2024.05.20 20:33:55 Log        -  [AVProVideo] Opening https://manifest.googlevideo.com/api/manifest/hls_playlist/asdfgh/playlist/index.m3u8 (offset 0) with API MediaFoundation
+2024.05.20 20:33:55 Log        -  [AVProVideo] Using playback path: MF-MediaEngine-Hardware (1280x720@0.00)
+2024.05.20 20:33:55 Log        -  [USharpVideo] Started video: https://www.youtube.com/watch?v=jfKfPfyJRdk
 
-"2024.04.14 21:25:36 Log        -  [Video Playback] URL 'http://example.com/mystream/index.m3u8' resolved to
-'http://example.com/mystream/stream.m3u8'"
-This one is more general, and might work everywhere, but it is 2 seconds delayed. If I don't need the resolution,
-I'd prefer the earlier the better.
+A recap.
+2024.05.20 20:33:53 Log        -  [Video Playback] Attempting to resolve URL 'https://www.youtube.com/watch?v=jfKfPfyJRdk'
+-- This is the first line that is printed REGARDLESS of which video player backend is used.
 
-"2024.04.14 21:25:34 Log        -  [Video Playback] Attempting to resolve URL
-'http://example.com/mystream/index.m3u8'"
-I'll go with this one for now, as it's the earliest and the easiest.
+2024.06.06 17:22:14 Log        -  [AVProVideo] Opening https://example.net/video.mp4 (offset 0) with API MediaFoundation
+-- This might be a good option, but it likely doesn't capture usage of the Unity player, which AFAICT also needs fixing.
 */
 pub(crate) static URL_REGEX: Lazy<Regex> = lazy_regex!(
-    r"^([0-9.: ]+) Log +- +\[Video Playback\] Attempting to resolve URL '(https?://\S+)'"
+    // r"^(?P<timestamp>[0-9.: ]+) Log +- +\[Video Playback\] Attempting to resolve URL '(?P<url>https?://\S+)'"
+    r"^(?P<timestamp>[0-9.: ]+) Log +- +\[AT INFO[ \t]+TVManager \((?P<player_name>.*)\)\] \[.*\] \([^()]*\) Now Playing: (?P<url>https?://\S+)"
 );
 
 // this is specifically for ProTV.
 // 2024.04.22 17:55:53 Log        -  [AT INFO    	TVManager (Theatre 1 TVManager)] Sync enforcement. Updating to 116.47
 // 2024.05.09 19:11:19 Log        -  [AT DEBUG 	TVManager (Theatre 1 TVManager)] Paused drift threshold exceeded. Updating to 64.8041
+// 2024.06.03 18:03:02 Log        -  [AT DEBUG 	TVManager (Theatre 3 TVManager)] Jumping [VideoManager_Theatre3] to timestamp: 171.1321
 pub(crate) static SEEK_REGEX: Lazy<Regex> = lazy_regex!(
-    r"^([0-9.: ]+) Log +- +\[AT (INFO|DEBUG)[ \t]+TVManager \(.*\)\] (Sync enforcement|Paused drift threshold exceeded). Updating to ([0-9.]+)$"
+    // r"^(?P<timestamp>[0-9.: ]+) Log +- +\[AT (INFO|DEBUG)[ \t]+TVManager \(.*\)\] (Sync enforcement|Paused drift threshold exceeded). Updating to (?P<new_offset>[0-9.]+)$"
+    r"^(?P<timestamp>[0-9.: ]+) Log +- +\[AT (INFO|DEBUG)[ \t]+TVManager \((?P<player_name>.*)\)\] (((Sync enforcement|Paused drift threshold exceeded). Updating to)|Jumping \[.*\] to timestamp:) (?P<new_offset>[0-9.]+)$"
 );
 
 fn tail_file<FCallback>(
