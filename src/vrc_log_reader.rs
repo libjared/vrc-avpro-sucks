@@ -1,4 +1,5 @@
-use lazy_regex::*;
+use lazy_regex::lazy_regex;
+use lazy_regex::Lazy;
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Result},
@@ -8,14 +9,27 @@ use std::{
 
 use chrono::{DateTime, Local, TimeZone};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use regex::Regex;
 
 use crate::{log_debug, log_error};
 
-fn try_match_seek_line(line: &String) -> Option<FoundSeek> {
+fn try_match_seek_line(line: &String, player_name_regex: &Option<Regex>) -> Option<FoundSeek> {
     if let Some(captures) = &SEEK_REGEX.captures(&line) {
-        log_debug!("Found seek line: {:#?}", line);
         let timestamp = captures.name("timestamp").unwrap().as_str();
         let seek_offset = captures.name("new_offset").unwrap().as_str();
+        let player_name = captures.name("player_name").unwrap().as_str();
+
+        if let Some(player_name_regex) = player_name_regex {
+            if !player_name_regex.is_match(player_name) {
+                log_debug!(
+                    "Skipping seek line because it doesn't match the player name regex: {:#?}",
+                    player_name
+                );
+                return None;
+            }
+        }
+
+        log_debug!("Found seek line: {:#?}", line);
 
         let timestamp = parse_timestamp(timestamp);
         // also, parse the seek offset as a floating point
@@ -44,12 +58,29 @@ fn parse_timestamp(timestamp: &str) -> DateTime<Local> {
     timestamp
 }
 
-fn try_match_url_line(line: &String, line_number: u64) -> Option<FoundUrl> {
+fn try_match_url_line(
+    line: &String,
+    line_number: u64,
+    player_name_regex: &Option<Regex>,
+) -> Option<FoundUrl> {
     if let Some(captures) = &URL_REGEX.captures(&line) {
-        log_debug!("Found URL line: {:#?}", line);
         let timestamp = captures.name("timestamp").unwrap().as_str();
         let url = captures.name("url").unwrap().as_str();
         let timestamp = parse_timestamp(timestamp);
+        let player_name = captures.name("player_name").unwrap().as_str();
+
+        if let Some(player_name_regex) = player_name_regex {
+            if !player_name_regex.is_match(player_name) {
+                log_debug!(
+                    "Skipping URL line because it doesn't match the player name regex: {:#?}",
+                    player_name
+                );
+                return None;
+            }
+        }
+
+        log_debug!("Found URL line: {:#?}", line);
+
         return Some(FoundUrl {
             timestamp,
             url: url.to_string(),
@@ -204,17 +235,19 @@ fn skip_n_lines(file: &File, n: u64) -> Result<()> {
 fn watch_file<FFoundUrl, FFoundSeek>(
     log_path: &PathBuf,
     start_after_line: u64,
+    player_name_regex: &Option<Regex>,
     mut on_found_url: FFoundUrl,
     mut on_found_seek: FFoundSeek,
 ) where
     FFoundUrl: FnMut(FoundUrl),
     FFoundSeek: FnMut(FoundSeek),
 {
+    let player_name_regex = player_name_regex.clone();
     tail_file(log_path, start_after_line, |line, line_number| {
-        if let Some(found_url) = try_match_url_line(&line, line_number) {
+        if let Some(found_url) = try_match_url_line(&line, line_number, &player_name_regex) {
             on_found_url(found_url);
         }
-        if let Some(found_seek) = try_match_seek_line(&line) {
+        if let Some(found_seek) = try_match_seek_line(&line, &player_name_regex) {
             on_found_seek(found_seek);
         }
     })
@@ -224,19 +257,23 @@ fn watch_file<FFoundUrl, FFoundSeek>(
 pub(crate) struct VrcLogReader {
     log_path: PathBuf,
     lines_read_initially: Option<u64>,
+
+    player_name_regex: Option<Regex>,
 }
 
 impl VrcLogReader {
-    pub(crate) fn new(path: PathBuf) -> Self {
+    fn new(path: PathBuf, player_name_regex: Option<Regex>) -> Self {
         Self {
             log_path: path,
             lines_read_initially: None,
+
+            player_name_regex,
         }
     }
 
-    pub(crate) fn from_latest() -> Self {
+    pub(crate) fn from_latest(player_name_regex: &Option<Regex>) -> Self {
         let log_path = get_latest_vrc_log_file().expect("No VRC log files found.");
-        Self::new(log_path)
+        Self::new(log_path, player_name_regex.clone())
     }
 
     pub(crate) fn get_latest_url_and_seek(&mut self) -> UrlAndSeekResult {
@@ -272,7 +309,9 @@ impl VrcLogReader {
                     log_debug!("Processed {} lines.", line_count);
                 }
 
-                if let Some(found_url) = try_match_url_line(&line, line_count) {
+                if let Some(found_url) =
+                    try_match_url_line(&line, line_count, &self.player_name_regex)
+                {
                     last_url = Some(found_url);
                 }
             }
@@ -294,7 +333,7 @@ impl VrcLogReader {
                     continue;
                 }
 
-                if let Some(found_seek) = try_match_seek_line(&line) {
+                if let Some(found_seek) = try_match_seek_line(&line, &self.player_name_regex) {
                     last_seek = Some(found_seek);
                 }
             }
@@ -311,16 +350,20 @@ pub(crate) enum UrlAndSeekResult {
 
 pub(crate) struct VrcLogWatcher {
     log_path: PathBuf,
+    player_name_regex: Option<Regex>,
 }
 
 impl VrcLogWatcher {
-    fn new(path: PathBuf) -> Self {
-        Self { log_path: path }
+    fn new(path: PathBuf, player_name_regex: Option<Regex>) -> Self {
+        Self {
+            log_path: path,
+            player_name_regex,
+        }
     }
 
-    pub(crate) fn from_latest() -> Self {
+    pub(crate) fn from_latest(player_name_regex: &Option<Regex>) -> Self {
         let log_path = get_latest_vrc_log_file().expect("No VRC log files found.");
-        Self::new(log_path)
+        Self::new(log_path, player_name_regex.clone())
     }
 
     pub(crate) fn watch_file<FFoundUrl, FFoundSeek>(
@@ -335,6 +378,7 @@ impl VrcLogWatcher {
         watch_file(
             &self.log_path,
             start_after_line,
+            &self.player_name_regex,
             on_found_url,
             on_found_seek,
         );

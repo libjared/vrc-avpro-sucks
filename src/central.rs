@@ -1,6 +1,7 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use chrono::{DateTime, Local};
+use regex::Regex;
 
 use crate::{
     log_debug,
@@ -42,8 +43,8 @@ impl Central {
         }
     }
 
-    pub(crate) fn do_initial(&mut self) -> u64 {
-        let initial_state_result = read_initial_state_from_log();
+    pub(crate) fn do_initial(&mut self, player_name_regex: &Option<Regex>) -> u64 {
+        let initial_state_result = read_initial_state_from_log(player_name_regex);
 
         if let Some(initial_state) = initial_state_result.initial_state {
             log_debug!("Initial state found.");
@@ -108,8 +109,8 @@ fn calculate_seek_from_initial_state(initial_state: &InitialState) -> f64 {
     new_seek_offset
 }
 
-fn read_initial_state_from_log() -> InitialStateResult {
-    let mut vlr = VrcLogReader::from_latest();
+fn read_initial_state_from_log(player_name_regex: &Option<Regex>) -> InitialStateResult {
+    let mut vlr = VrcLogReader::from_latest(player_name_regex);
     let url_and_seek = vlr.get_latest_url_and_seek();
     match url_and_seek {
         UrlAndSeekResult::Nothing(lines_read_initially) => {
